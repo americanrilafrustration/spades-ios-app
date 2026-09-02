@@ -21,10 +21,16 @@ struct GameView: View {
             VStack(spacing: 0) {
                 topBar
                 Rectangle().fill(Palette.lineGold).frame(height: 2)
-                table
+                ZStack {
+                    table
+                    if showBidPad {
+                        Color.black.opacity(0.45)
+                        bidPad
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 handArea
             }
-            if showBidPad { bidPad }
             if state.phase == .handOver || state.phase == .gameOver {
                 ScorecardOverlay(
                     state: state,
@@ -115,6 +121,7 @@ struct GameView: View {
             .clipShape(Capsule())
     }
 
+    @ViewBuilder
     private var table: some View {
         let north = TableLayout.actualSeat(visual: .north, local: local)
         let west = TableLayout.actualSeat(visual: .west, local: local)
@@ -158,22 +165,38 @@ struct GameView: View {
         .padding(.vertical, 8)
     }
 
+    @ViewBuilder
     private var centerPlay: some View {
+        let winningSeat: Seat? = {
+            guard let lead = state.leadSuit, !state.trick.isEmpty else { return nil }
+            return SpadesEngine.trickWinner(state.trick, lead: lead)
+        }()
         ZStack {
-            ForEach(state.trick, id: \.seat) { play in
+            ForEach(Array(state.trick.enumerated()), id: \.offset) { index, play in
                 let visual = TableLayout.visualSeat(actual: play.seat, local: local)
-                PlayingCardView(card: play.card, width: 52)
-                    .offset(trickOffset(visual))
+                PlayingCardView(
+                    card: play.card,
+                    highlighted: play.seat == winningSeat,
+                    highlightColor: Palette.continueTop,
+                    showCenterPip: true,
+                    width: TrickLayout.cardWidth
+                )
+                .offset(TrickLayout.offset(for: visual))
+                .zIndex(play.seat == winningSeat ? 10 : Double(index))
             }
         }
     }
 
-    private func trickOffset(_ visual: Seat) -> CGSize {
-        switch visual {
-        case .south: return CGSize(width: 0, height: 36)
-        case .north: return CGSize(width: 0, height: -36)
-        case .west: return CGSize(width: -40, height: 0)
-        case .east: return CGSize(width: 40, height: 0)
+    private enum TrickLayout {
+        static let cardWidth: CGFloat = 60
+
+        static func offset(for visual: Seat) -> CGSize {
+            switch visual {
+            case .south: return CGSize(width: 0, height: 62)
+            case .north: return CGSize(width: 0, height: -62)
+            case .west: return CGSize(width: -72, height: 0)
+            case .east: return CGSize(width: 72, height: 0)
+            }
         }
     }
 
@@ -243,90 +266,82 @@ struct GameView: View {
                 }
             }
             .padding(.horizontal, 16)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: -18) {
-                    ForEach(Array(state.player(local).hand.enumerated()), id: \.offset) { _, card in
-                        let canPlay = state.phase == .playing && state.turn == local && state.trickWinner == nil
-                        let allowed = legal.contains(card)
-                        Button {
-                            if canPlay && allowed {
+            Color.clear
+                .frame(height: 104)
+                .overlay {
+                    GeometryReader { geo in
+                        PlayerHandRow(
+                            hand: state.player(local).hand,
+                            width: geo.size.width,
+                            highlighted: hintCard,
+                            dimmed: { card in
+                                state.phase == .playing && state.turn == local && state.trickWinner == nil && !legal.contains(card)
+                            },
+                            onTap: { card in
                                 hintCard = nil
                                 store.play(card)
-                            }
-                        } label: {
-                            PlayingCardView(
-                                card: card,
-                                dimmed: canPlay && !allowed,
-                                highlighted: hintCard == card,
-                                width: 62
-                            )
-                            .offset(y: hintCard == card ? -10 : 0)
-                        }
-                        .disabled(!(canPlay && allowed))
+                            },
+                            tappable: state.phase == .playing && state.turn == local && state.trickWinner == nil
+                        )
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-            }
         }
         .padding(.bottom, 8)
         .background(Palette.navyHeader)
     }
 
+    @ViewBuilder
     private var bidPad: some View {
-        ZStack {
-            Color.black.opacity(0.45).ignoresSafeArea()
-            VStack(spacing: 12) {
-                Text("How many tricks do you think you will take?")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.12, green: 0.16, blue: 0.28))
-                    .multilineTextAlignment(.center)
-                if state.nilEnabled {
-                    Text("0 is Nil · ±100").font(.system(size: 13)).foregroundStyle(Color.gray)
-                }
-                let columns = [GridItem(.adaptive(minimum: 52), spacing: 8)]
-                LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(0...state.tricksPerHand, id: \.self) { n in
-                        Button {
-                            selectedBid = n
-                        } label: {
-                            Text(n == 0 && state.nilEnabled ? "Nil" : "\(n)")
-                                .font(.system(size: 16, weight: .bold))
-                                .frame(width: 52, height: 44)
-                                .background(
-                                    LinearGradient(
-                                        colors: selectedBid == n
-                                            ? [Color(red: 0.847, green: 1, blue: 0.353), Color(red: 0.490, green: 1, blue: 0.831)]
-                                            : [Color(red: 0.353, green: 0.608, blue: 1), Color(red: 0.118, green: 0.337, blue: 0.910)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
+        VStack(spacing: 12) {
+            Text("How many tricks do you think you will take?")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color(red: 0.12, green: 0.16, blue: 0.28))
+                .multilineTextAlignment(.center)
+            if state.nilEnabled {
+                Text("0 is Nil · ±100").font(.system(size: 13)).foregroundStyle(Color.gray)
+            }
+            let columns = [GridItem(.adaptive(minimum: 52), spacing: 8)]
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(0...state.tricksPerHand, id: \.self) { n in
+                    Button {
+                        selectedBid = n
+                    } label: {
+                        Text(n == 0 && state.nilEnabled ? "Nil" : "\(n)")
+                            .font(.system(size: 16, weight: .bold))
+                            .frame(width: 52, height: 44)
+                            .background(
+                                LinearGradient(
+                                    colors: selectedBid == n
+                                        ? [Color(red: 0.847, green: 1, blue: 0.353), Color(red: 0.490, green: 1, blue: 0.831)]
+                                        : [Color(red: 0.353, green: 0.608, blue: 1), Color(red: 0.118, green: 0.337, blue: 0.910)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
                                 )
-                                .foregroundStyle(selectedBid == n ? Palette.navyDeep : .white)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
+                            )
+                            .foregroundStyle(selectedBid == n ? Palette.navyDeep : .white)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                 }
-                Text("Count your Aces, Kings and Spades!")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.gray)
-                Button("PLACE BID") {
-                    if let selectedBid { store.bid(selectedBid) }
-                }
-                .font(.system(size: 16, weight: .black))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 48)
-                .background(LinearGradient(colors: [Color(red: 0.102, green: 0.831, blue: 0.722), Color(red: 0.055, green: 0.639, blue: 0.478)], startPoint: .leading, endPoint: .trailing))
-                .clipShape(Capsule())
-                .opacity(selectedBid == nil ? 0.45 : 1)
-                .disabled(selectedBid == nil)
             }
-            .padding(18)
-            .background(Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: 22))
-            .padding(.horizontal, 20)
+            Text("Count your Aces, Kings and Spades!")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.gray)
+            Button("PLACE BID") {
+                if let selectedBid { store.bid(selectedBid) }
+            }
+            .font(.system(size: 16, weight: .black))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(LinearGradient(colors: [Color(red: 0.102, green: 0.831, blue: 0.722), Color(red: 0.055, green: 0.639, blue: 0.478)], startPoint: .leading, endPoint: .trailing))
+            .clipShape(Capsule())
+            .opacity(selectedBid == nil ? 0.45 : 1)
+            .disabled(selectedBid == nil)
         }
+        .padding(18)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+        .padding(.horizontal, 20)
         .onAppear { selectedBid = nil }
     }
 
@@ -367,5 +382,73 @@ struct GameView: View {
 
     private func requestLeave() {
         if gameInProgress { confirmLeave = true } else { store.backToMenu() }
+    }
+}
+
+private struct PlayerHandRow: View {
+    let hand: [Card]
+    let width: CGFloat
+    var highlighted: Card?
+    var dimmed: (Card) -> Bool = { _ in false }
+    var onTap: (Card) -> Void = { _ in }
+    var tappable: Bool = false
+
+    var body: some View {
+        let metrics = HandMetrics.fit(count: hand.count, in: width)
+        let span = metrics.span(cardCount: hand.count)
+
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(hand.enumerated()), id: \.offset) { index, card in
+                let cardView = PlayingCardView(
+                    card: card,
+                    dimmed: dimmed(card),
+                    highlighted: highlighted == card,
+                    width: metrics.cardWidth
+                )
+                .offset(y: highlighted == card ? -10 : 0)
+
+                Group {
+                    if tappable && !dimmed(card) {
+                        Button { onTap(card) } label: { cardView }
+                            .buttonStyle(.plain)
+                    } else {
+                        cardView
+                    }
+                }
+                .fixedSize()
+                .offset(x: CGFloat(index) * metrics.step)
+            }
+        }
+        .frame(width: span, height: metrics.cardHeight + 12, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
+private struct HandMetrics {
+    let cardWidth: CGFloat
+    let step: CGFloat
+
+    var cardHeight: CGFloat { cardWidth * 1.4 }
+
+    func span(cardCount: Int) -> CGFloat {
+        let count = max(cardCount, 1)
+        if count <= 1 { return cardWidth }
+        return cardWidth + step * CGFloat(count - 1)
+    }
+
+    static func fit(count: Int, in width: CGFloat) -> HandMetrics {
+        let cards = max(count, 1)
+        let horizontalPadding: CGFloat = 8
+        let usable = max(width - horizontalPadding * 2, 240)
+        let maxWidth: CGFloat = 58
+        let minWidth: CGFloat = 42
+        let minStep: CGFloat = 26
+
+        var cardWidth = maxWidth
+        if cards > 1 {
+            cardWidth = min(maxWidth, max(minWidth, usable - minStep * CGFloat(cards - 1)))
+        }
+        let step = cards > 1 ? (usable - cardWidth) / CGFloat(cards - 1) : cardWidth
+        return HandMetrics(cardWidth: cardWidth, step: step)
     }
 }

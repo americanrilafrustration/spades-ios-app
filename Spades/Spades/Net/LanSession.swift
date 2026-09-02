@@ -173,11 +173,17 @@ final class LanSession {
         guard let connection = connections[id] else { return }
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] content, _, isComplete, error in
             guard let self else { return }
-            if let content {
+            if let error {
+                self.connections.removeValue(forKey: id)
+                self.buffers.removeValue(forKey: id)
+                self.post(.disconnected(id: id))
+                return
+            }
+            if let content, !content.isEmpty {
                 self.buffers[id, default: Data()].append(content)
                 self.drain(id)
             }
-            if isComplete || error != nil {
+            if isComplete, content == nil || content?.isEmpty == true {
                 self.connections.removeValue(forKey: id)
                 self.buffers.removeValue(forKey: id)
                 self.post(.disconnected(id: id))
@@ -193,6 +199,8 @@ final class LanSession {
             let length = UInt32(bigEndian: raw)
             guard length > 0, length < 2_000_000 else {
                 buffers.removeValue(forKey: id)
+                connections.removeValue(forKey: id)?.cancel()
+                post(.disconnected(id: id))
                 return
             }
             if buffer.count < 4 + Int(length) { return }

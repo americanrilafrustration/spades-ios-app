@@ -45,22 +45,16 @@ private struct PartnershipScorecard: View {
             onQuit: onQuit
         ) {
             tableHeaders()
-            resultRow(
-                label: nsLabel.uppercased(),
-                names: result.nsPlayers.map(\.name),
-                accent: Palette.teamBlue,
-                summary: result.ns,
-                total: nsNow,
-                leading: nsNow > ewNow
-            )
-            resultRow(
-                label: ewLabel.uppercased(),
-                names: result.ewPlayers.map(\.name),
-                accent: Color(red: 0.357, green: 0.396, blue: 0.471),
-                summary: result.ew,
-                total: ewNow,
-                leading: ewNow > nsNow
-            )
+            ForEach(sortedTeams, id: \.label) { team in
+                resultRow(
+                    label: team.label,
+                    names: team.names,
+                    accent: team.accent,
+                    summary: team.summary,
+                    total: team.total,
+                    leading: team.total == max(nsNow, ewNow) && nsNow != ewNow
+                )
+            }
             if let overtake {
                 leadChip(overtake)
             }
@@ -99,6 +93,16 @@ private struct PartnershipScorecard: View {
         let usWon = result.ns.total > result.ew.total
         return onUs ? usWon : !usWon
     }
+
+    private var sortedTeams: [(label: String, names: [String], accent: Color, summary: TeamHandSummary, total: Int)] {
+        let nsLabel = state.nsTeamName.isEmpty ? "US" : state.nsTeamName
+        let ewLabel = state.ewTeamName.isEmpty ? "THEM" : state.ewTeamName
+        let teams = [
+            (nsLabel.uppercased(), result.nsPlayers.map(\.name), Palette.teamBlue, result.ns, nsNow),
+            (ewLabel.uppercased(), result.ewPlayers.map(\.name), Color(red: 0.357, green: 0.396, blue: 0.471), result.ew, ewNow)
+        ]
+        return teams.sorted { $0.4 > $1.4 }.map { (label: $0.0, names: $0.1, accent: $0.2, summary: $0.3, total: $0.4) }
+    }
 }
 
 private struct IndividualScorecard: View {
@@ -115,8 +119,8 @@ private struct IndividualScorecard: View {
 
     var body: some View {
         let gameOver = state.phase == .gameOver
-        let players = result.individuals
-        let best = now.values.max() ?? 0
+        let players = sortedPlayers(now: now)
+        let best = players.map { now[$0.seat] ?? $0.previousTotal }.max() ?? 0
         ResultsSheet(
             title: gameOver ? "FINAL RESULTS" : "ROUND \(result.handNumber) RESULTS",
             counting: counting,
@@ -132,7 +136,7 @@ private struct IndividualScorecard: View {
                 let name = summary.seat == state.localSeat ? "YOU" : summary.name.uppercased()
                 resultRow(
                     label: name,
-                    names: [summary.seat == state.localSeat ? "You" : summary.name],
+                    names: [],
                     accent: seatAccent(summary.seat, partnership: false),
                     playLine: playLine(summary.contract, summary.tricks, summary.made, summary.nilPoints),
                     roundNote: roundNote(summary.bidPoints, summary.bagPoints, summary.nilPoints, summary.bagsTaken, summary.bagPenalty, summary.previousTotal),
@@ -140,17 +144,19 @@ private struct IndividualScorecard: View {
                     total: now[summary.seat] ?? summary.previousTotal,
                     bags: summary.bags,
                     bagPenalty: summary.bagPenalty,
-                    leading: (now[summary.seat] ?? 0) == best
+                    leading: (now[summary.seat] ?? summary.previousTotal) == best
                 )
             }
             if let overtake { leadChip(overtake) }
             if gameOver {
-                let winner = players.max(by: { $0.total < $1.total })?.name ?? ""
-                let tied = players.filter { $0.total == (players.map(\.total).max() ?? 0) }.count > 1
-                winLose(youWon: players.first(where: { $0.total == players.map(\.total).max() })?.seat == state.localSeat && !tied, tied: tied && gameOver, hint: "\(winner) reached \(state.targetScore)")
+                let topScore = players.map(\.total).max() ?? 0
+                let winner = players.first(where: { $0.total == topScore })?.name ?? ""
+                let tied = players.filter { $0.total == topScore }.count > 1
+                winLose(youWon: players.first(where: { $0.total == topScore })?.seat == state.localSeat && !tied, tied: tied && gameOver, hint: "\(winner) reached \(state.targetScore)")
             }
         }
         .task(id: result.handNumber) {
+            let players = result.individuals
             now = Dictionary(uniqueKeysWithValues: players.map { ($0.seat, $0.previousTotal) })
             counting = true
             showFinale = false
@@ -165,6 +171,15 @@ private struct IndividualScorecard: View {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 showFinale = true
             }
+        }
+    }
+
+    private func sortedPlayers(now: [Seat: Int]) -> [PlayerHandSummary] {
+        result.individuals.sorted { a, b in
+            let aTotal = now[a.seat] ?? a.previousTotal
+            let bTotal = now[b.seat] ?? b.previousTotal
+            if aTotal != bTotal { return aTotal > bTotal }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
         }
     }
 }
@@ -183,53 +198,57 @@ private struct ResultsSheet<Content: View>: View {
     var body: some View {
         ZStack {
             Color(red: 0.027, green: 0.078, blue: 0.157).opacity(0.8).ignoresSafeArea()
-            VStack(spacing: 0) {
-                Text(title)
-                    .font(.system(size: 16, weight: .black))
-                    .foregroundStyle(.white)
-                    .tracking(1.2)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 58)
-                    .background(LinearGradient(colors: [Palette.headerTop, Palette.headerBottom], startPoint: .top, endPoint: .bottom))
-                VStack(alignment: .leading, spacing: 8) {
-                    content
-                    Spacer().frame(height: 10)
-                    if gameOver {
-                        if !isLanGuest {
-                            Button("PLAY AGAIN", action: onNewGame)
+            VStack {
+                Spacer(minLength: 56)
+                VStack(spacing: 0) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .black))
+                        .foregroundStyle(.white)
+                        .tracking(1.2)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 58)
+                        .background(LinearGradient(colors: [Palette.headerTop, Palette.headerBottom], startPoint: .top, endPoint: .bottom))
+                    VStack(alignment: .leading, spacing: 8) {
+                        content
+                        if gameOver {
+                            if !isLanGuest {
+                                Button("PLAY AGAIN", action: onNewGame)
+                                    .font(.system(size: 16, weight: .black))
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 48)
+                                    .background(LinearGradient(colors: [Palette.continueTop, Palette.continueBottom], startPoint: .leading, endPoint: .trailing))
+                                    .clipShape(Capsule())
+                            } else {
+                                Text("Waiting for the host")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(Color.gray)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            Button("Menu", action: onQuit)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Color(red: 0.118, green: 0.337, blue: 0.910))
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 4)
+                        } else {
+                            Button("CONTINUE", action: onContinue)
                                 .font(.system(size: 16, weight: .black))
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 48)
                                 .background(LinearGradient(colors: [Palette.continueTop, Palette.continueBottom], startPoint: .leading, endPoint: .trailing))
                                 .clipShape(Capsule())
-                        } else {
-                            Text("Waiting for the host")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(Color.gray)
-                                .frame(maxWidth: .infinity)
                         }
-                        Button("Menu", action: onQuit)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Color(red: 0.118, green: 0.337, blue: 0.910))
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 4)
-                    } else {
-                        Button("CONTINUE", action: onContinue)
-                            .font(.system(size: 16, weight: .black))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 48)
-                            .background(LinearGradient(colors: [Palette.continueTop, Palette.continueBottom], startPoint: .leading, endPoint: .trailing))
-                            .clipShape(Capsule())
                     }
+                    .padding(16)
                 }
-                .padding(16)
+                .background(Palette.sheetWhite)
+                .overlay(RoundedRectangle(cornerRadius: 26).stroke(Palette.cardBorder, lineWidth: 1.8))
+                .clipShape(RoundedRectangle(cornerRadius: 26))
+                .padding(.horizontal, 20)
+                .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 56)
             }
-            .background(Palette.sheetWhite)
-            .overlay(RoundedRectangle(cornerRadius: 26).stroke(Palette.cardBorder, lineWidth: 1.8))
-            .clipShape(RoundedRectangle(cornerRadius: 26))
-            .padding(.horizontal, 16)
         }
     }
 }
@@ -274,7 +293,9 @@ private func resultRow(
         RoundedRectangle(cornerRadius: 3).fill(accent).frame(width: 6)
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.system(size: 14, weight: .black)).foregroundStyle(Color(red: 0.11, green: 0.14, blue: 0.22))
-            Text(names.joined(separator: " · ")).font(.system(size: 12)).foregroundStyle(Color.gray)
+            if !names.isEmpty {
+                Text(names.joined(separator: " · ")).font(.system(size: 12)).foregroundStyle(Color.gray)
+            }
             Text(playLine).font(.system(size: 12)).foregroundStyle(Color(red: 0.25, green: 0.28, blue: 0.35))
             if let roundNote {
                 Text(roundNote).font(.system(size: 11)).foregroundStyle(Color.gray)

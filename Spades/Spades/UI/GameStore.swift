@@ -11,6 +11,7 @@ final class GameStore: ObservableObject {
     private var role: Role = .none
     private var session: LanSession?
     private var hostEndpointId: String?
+    private var connectedHostName: String = ""
     private var endpointSeats: [String: Seat] = [:]
     private var endpointNames: [String: String] = [:]
     private var rejoinSeats: [String: RejoinSlot] = [:]
@@ -21,6 +22,8 @@ final class GameStore: ObservableObject {
     private var dealTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
     private var rejoinWatch: Task<Void, Never>?
+    private var continueAcks: Set<String> = []
+    private var pendingDisconnects: [String: Task<Void, Never>] = [:]
 
     private var lastPhase: Phase = .menu
     private var lastHand = -1
@@ -33,12 +36,29 @@ final class GameStore: ObservableObject {
     private static let rejoinWindowMs: Int64 = 5 * 60 * 1000
 
     init() {
-        // Audio reacts whenever state changes in apply/publish.
+        let loaded = AppSettings.load()
+        settings = loaded
+        state.nilEnabled = loaded.nilEnabled
+        state.bagPenaltyEnabled = loaded.bagPenaltyEnabled
     }
 
-    func setMusic(_ enabled: Bool) { saveSettings(AppSettings(music: enabled, sfx: settings.sfx, vibration: settings.vibration)) }
-    func setSfx(_ enabled: Bool) { saveSettings(AppSettings(music: settings.music, sfx: enabled, vibration: settings.vibration)) }
-    func setVibration(_ enabled: Bool) { saveSettings(AppSettings(music: settings.music, sfx: settings.sfx, vibration: enabled)) }
+    func setMusic(_ enabled: Bool) {
+        var next = settings
+        next.music = enabled
+        saveSettings(next)
+    }
+
+    func setSfx(_ enabled: Bool) {
+        var next = settings
+        next.sfx = enabled
+        saveSettings(next)
+    }
+
+    func setVibration(_ enabled: Bool) {
+        var next = settings
+        next.vibration = enabled
+        saveSettings(next)
+    }
 
     private func saveSettings(_ next: AppSettings) {
         settings = next
@@ -64,8 +84,8 @@ final class GameStore: ObservableObject {
         let kept = preservedRejoin(current)
         var next = GameState()
         next.phase = .lobby
-        next.nilEnabled = current.nilEnabled
-        next.bagPenaltyEnabled = current.bagPenaltyEnabled
+        next.nilEnabled = settings.nilEnabled
+        next.bagPenaltyEnabled = settings.bagPenaltyEnabled
         next.partnership = false
         next.playerName = current.playerName
         next.targetScore = 500
@@ -102,8 +122,8 @@ final class GameStore: ObservableObject {
         teardownLan()
         cancelJobs()
         var next = GameState()
-        next.nilEnabled = current.nilEnabled
-        next.bagPenaltyEnabled = current.bagPenaltyEnabled
+        next.nilEnabled = settings.nilEnabled
+        next.bagPenaltyEnabled = settings.bagPenaltyEnabled
         next.partnership = current.partnership
         next.playerName = current.playerName
         next.rejoinHostName = hostName
@@ -154,6 +174,9 @@ final class GameStore: ObservableObject {
     func setNilEnabled(_ enabled: Bool) {
         guard state.phase == .menu || state.phase == .lobby else { return }
         state.nilEnabled = enabled
+        var next = settings
+        next.nilEnabled = enabled
+        saveSettings(next)
         if role == .host {
             state.lobbySeats = lobbySnapshot(currentName())
             publishLobby()
@@ -164,6 +187,9 @@ final class GameStore: ObservableObject {
         guard state.phase == .menu || state.phase == .lobby else { return }
         if state.phase == .lobby && !state.isHost && role != .host { return }
         state.bagPenaltyEnabled = enabled
+        var next = settings
+        next.bagPenaltyEnabled = enabled
+        saveSettings(next)
         if role == .host {
             state.lobbySeats = lobbySnapshot(currentName())
             publishLobby()
@@ -240,8 +266,6 @@ final class GameStore: ObservableObject {
         let humanCount = endpointSeats.count + 1
         guard (2...4).contains(humanCount) else { return }
         cancelJobs()
-        rejoinSeats.removeAll()
-        session?.stopAdvertising()
         let partnership = humanCount == 4 && state.partnership
         let seated = lanSeating(hostName: currentName(), partnership: partnership, partnerSeat: state.hostPartnerSeat)
         endpointSeats = seated.1
@@ -263,7 +287,7 @@ final class GameStore: ObservableObject {
         started.localSeat = .south
         started.hostPartnerSeat = partnership ? .north : nil
         state = started
-        session?.broadcast(.state(game: started))
+        session?.broadcast(.state(game: stateForBroadcast(started)))
         runDeal()
     }
 
@@ -303,6 +327,38 @@ final class GameStore: ObservableObject {
             }
             return
         }
+        if state.isLan && state.isHost {
+            continueAcks.insert("host")
+            tryAdvanceAfterContinue()
+            return
+        }
+        startNextHandAfterContinue()
+    }
+
+    private func onRemoteContinue(_ fromId: String) {
+        guard state.phase == .handOver else { return }
+        guard endpointSeats[fromId] != nil else { return }
+        continueAcks.insert(fromId)
+        tryAdvanceAfterContinue()
+    }
+
+    private func requiredContinueIds() -> Set<String> {
+        var ids = Set(endpointSeats.keys)
+        ids.insert("host")
+        return ids
+    }
+
+    private func allPlayersContinued() -> Bool {
+        requiredContinueIds().isSubset(of: continueAcks)
+    }
+
+    private func tryAdvanceAfterContinue() {
+        guard state.phase == .handOver, allPlayersContinued() else { return }
+        continueAcks.removeAll()
+        startNextHandAfterContinue()
+    }
+
+    private func startNextHandAfterContinue() {
         cancelJobs()
         applyHost { SpadesEngine.nextHand($0) }
         runDeal()
@@ -402,9 +458,12 @@ final class GameStore: ObservableObject {
     private func onConnected(_ id: String, name: String) {
         if role == .guest {
             hostEndpointId = id
+            if let table = state.discoveredTables.first(where: { $0.endpointId == id }) {
+                connectedHostName = table.hostName
+            }
             session?.stopDiscovery()
             session?.send(id, .hello(name: currentName()))
-            let looking = state.rejoinHostName
+            let looking = connectedHostName.isEmpty ? state.rejoinHostName : connectedHostName
             state.lobbyMessage = looking.isEmpty ? "Connected. Waiting for the host to deal." : "Rejoining \(looking)…"
             return
         }
@@ -420,17 +479,33 @@ final class GameStore: ObservableObject {
     private func onDisconnected(_ id: String) {
         if role == .guest && id == hostEndpointId {
             let current = state
+            let hostName = connectedHostName.isEmpty ? current.rejoinHostName : connectedHostName
             teardownLan()
             var next = GameState()
-            next.nilEnabled = current.nilEnabled
-            next.bagPenaltyEnabled = current.bagPenaltyEnabled
+            next.nilEnabled = settings.nilEnabled
+            next.bagPenaltyEnabled = settings.bagPenaltyEnabled
             next.partnership = current.partnership
             next.playerName = current.playerName
             next.phase = .menu
+            if !hostName.isEmpty && Self.inGamePhases.contains(current.phase) {
+                next.rejoinHostName = hostName
+                next.rejoinUntilMillis = nowMs() + Self.rejoinWindowMs
+            }
             state = next
             return
         }
         guard role == .host else { return }
+        guard endpointSeats[id] != nil else { return }
+        pendingDisconnects[id]?.cancel()
+        pendingDisconnects[id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            await MainActor.run { self.finalizeHostDisconnect(id) }
+        }
+    }
+
+    private func finalizeHostDisconnect(_ id: String) {
+        pendingDisconnects.removeValue(forKey: id)
         guard let seat = endpointSeats.removeValue(forKey: id) else { return }
         let leftName = endpointNames.removeValue(forKey: id) ?? state.players[seat]?.name ?? "A player"
         if state.phase == .lobby {
@@ -441,7 +516,20 @@ final class GameStore: ObservableObject {
             publishLobby()
             return
         }
+        if state.phase == .handOver {
+            tryAdvanceAfterContinue()
+        }
         replaceSeatWithAi(seat, leftName: leftName)
+    }
+
+    private func cancelPendingDisconnect(forSeat seat: Seat, keepId: String) {
+        if let oldId = endpointSeats.first(where: { $0.value == seat && $0.key != keepId })?.key {
+            pendingDisconnects[oldId]?.cancel()
+            pendingDisconnects.removeValue(forKey: oldId)
+            endpointSeats.removeValue(forKey: oldId)
+            endpointNames.removeValue(forKey: oldId)
+            session?.disconnect(oldId)
+        }
     }
 
     private func replaceSeatWithAi(_ seat: Seat, leftName: String) {
@@ -467,6 +555,7 @@ final class GameStore: ObservableObject {
     private func acceptRejoin(_ fromId: String, slot: RejoinSlot) {
         guard var player = state.players[slot.seat] else { return }
         rejoinSeats.removeValue(forKey: normalizeName(slot.name))
+        cancelPendingDisconnect(forSeat: slot.seat, keepId: fromId)
         endpointSeats[fromId] = slot.seat
         endpointNames[fromId] = slot.name
         player.isHuman = true
@@ -477,8 +566,8 @@ final class GameStore: ObservableObject {
         var next = state
         next.notice = notice
         publish(next)
-        session?.send(fromId, .state(game: state))
-        if rejoinSeats.isEmpty {
+        session?.send(fromId, .state(game: stateForBroadcast(state)))
+        if rejoinSeats.isEmpty && state.phase == .lobby {
             session?.stopAdvertising()
             rejoinWatch?.cancel()
         }
@@ -520,7 +609,7 @@ final class GameStore: ObservableObject {
         case .play:
             if role == .host, let card = msg.card { onRemotePlay(fromId, card: card) }
         case .continue:
-            if role == .host { continueNextHand() }
+            if role == .host { onRemoteContinue(fromId) }
         case .error(let message):
             state.lobbyMessage = message
         }
@@ -533,10 +622,20 @@ final class GameStore: ObservableObject {
             pruneExpiredRejoin()
             if let slot = rejoinSeats[normalizeName(clean)] {
                 acceptRejoin(fromId, slot: slot)
-            } else {
-                session?.send(fromId, .error(message: "This table already started. Rejoin only works for 5 minutes with the same name."))
-                session?.disconnect(fromId)
+                return
             }
+            if let seated = state.players.first(where: {
+                $0.value.isHuman && normalizeName($0.value.name) == normalizeName(clean)
+            }) {
+                cancelPendingDisconnect(forSeat: seated.key, keepId: fromId)
+                endpointSeats[fromId] = seated.key
+                endpointNames[fromId] = clean
+                session?.send(fromId, .assign(seat: seated.key))
+                session?.send(fromId, .state(game: stateForBroadcast(state)))
+                return
+            }
+            session?.send(fromId, .error(message: "This table already started. Rejoin only works for 5 minutes with the same name."))
+            session?.disconnect(fromId)
             return
         }
         guard let seat = Self.guestSeats.first(where: { candidate in !endpointSeats.values.contains(candidate) }) else {
@@ -643,11 +742,27 @@ final class GameStore: ObservableObject {
     }
 
     private func publish(_ next: GameState) {
+        let previous = state
+        if next.phase == .handOver && previous.phase != .handOver {
+            continueAcks.removeAll()
+        }
         state = next
         reactAudio()
-        if next.isLan && next.isHost && next.phase != .lobby {
-            session?.broadcast(.state(game: next))
-        }
+        guard next.isLan && next.isHost && next.phase != .lobby else { return }
+        // Dealing animates locally card-by-card; guests only need start + end snapshots.
+        if previous.phase == .dealing && next.phase == .dealing { return }
+        session?.broadcast(.state(game: stateForBroadcast(next)))
+    }
+
+    private func stateForBroadcast(_ game: GameState) -> GameState {
+        var copy = game
+        copy.discoveredTables = []
+        copy.lobbySeats = []
+        copy.lobbyMessage = ""
+        copy.rejoinHostName = ""
+        copy.rejoinUntilMillis = 0
+        copy.scoreHistory = []
+        return copy
     }
 
     private func applyRemote(_ game: GameState) {
@@ -671,12 +786,16 @@ final class GameStore: ObservableObject {
     private func teardownLan() {
         noticeTask?.cancel()
         rejoinWatch?.cancel()
+        pendingDisconnects.values.forEach { $0.cancel() }
+        pendingDisconnects.removeAll()
+        continueAcks.removeAll()
         rejoinSeats.removeAll()
         autoRejoinAttempted = false
         session?.shutdown()
         session = nil
         role = .none
         hostEndpointId = nil
+        connectedHostName = ""
         endpointSeats.removeAll()
         endpointNames.removeAll()
     }
@@ -705,7 +824,7 @@ final class GameStore: ObservableObject {
     private func pruneExpiredRejoin() {
         let now = nowMs()
         rejoinSeats = rejoinSeats.filter { now - $0.value.leftAt <= Self.rejoinWindowMs }
-        if rejoinSeats.isEmpty {
+        if rejoinSeats.isEmpty && state.phase == .lobby {
             session?.stopAdvertising()
             rejoinWatch?.cancel()
         }

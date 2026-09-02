@@ -6,6 +6,8 @@ struct AppSettings: Equatable {
     var music: Bool = true
     var sfx: Bool = true
     var vibration: Bool = true
+    var nilEnabled: Bool = false
+    var bagPenaltyEnabled: Bool = true
 
     private static let defaults = UserDefaults.standard
 
@@ -13,7 +15,9 @@ struct AppSettings: Equatable {
         AppSettings(
             music: defaults.object(forKey: "music") as? Bool ?? true,
             sfx: defaults.object(forKey: "sfx") as? Bool ?? true,
-            vibration: defaults.object(forKey: "vibration") as? Bool ?? true
+            vibration: defaults.object(forKey: "vibration") as? Bool ?? true,
+            nilEnabled: defaults.object(forKey: "nilEnabled") as? Bool ?? false,
+            bagPenaltyEnabled: defaults.object(forKey: "bagPenaltyEnabled") as? Bool ?? true
         )
     }
 
@@ -21,6 +25,8 @@ struct AppSettings: Equatable {
         Self.defaults.set(music, forKey: "music")
         Self.defaults.set(sfx, forKey: "sfx")
         Self.defaults.set(vibration, forKey: "vibration")
+        Self.defaults.set(nilEnabled, forKey: "nilEnabled")
+        Self.defaults.set(bagPenaltyEnabled, forKey: "bagPenaltyEnabled")
     }
 }
 

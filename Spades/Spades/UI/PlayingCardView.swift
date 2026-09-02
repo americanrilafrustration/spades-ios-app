@@ -5,23 +5,39 @@ struct PlayingCardView: View {
     var faceUp: Bool = true
     var dimmed: Bool = false
     var highlighted: Bool = false
+    var highlightColor: Color = Palette.hintYellow
+    var showCenterPip: Bool = false
     var width: CGFloat = 58
 
+    private var height: CGFloat { width * 1.45 }
+    private var cornerFontSize: CGFloat {
+        card.rank == .ten ? width * 0.21 : width * 0.26
+    }
+    private var suitFontSize: CGFloat { width * 0.22 }
+    private var cornerPadding: CGFloat { width * 0.1 }
+
     var body: some View {
-        let height = width * 1.4
         ZStack {
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 5)
                 .fill(faceUp ? Color.white : Color.clear)
             if faceUp {
-                VStack(spacing: 0) {
-                    Text(card.rank.pip)
-                        .font(.system(size: width * 0.32, weight: .bold))
+                let color = card.suit.isRed ? Palette.cardRed : Palette.cardBlack
+                cornerIndex(color: color)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.leading, cornerPadding)
+                    .padding(.top, cornerPadding * 0.75)
+                cornerIndex(color: color)
+                    .rotationEffect(.degrees(180))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, cornerPadding)
+                    .padding(.bottom, cornerPadding * 0.75)
+                if showCenterPip {
                     Text(card.suit.symbol)
-                        .font(.system(size: width * 0.28))
+                        .font(.system(size: width * 0.44))
+                        .foregroundStyle(color)
                 }
-                .foregroundStyle(card.suit.isRed ? Palette.cardRed : Palette.cardBlack)
             } else {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 5)
                     .fill(
                         LinearGradient(
                             colors: [Color(red: 0.102, green: 0.290, blue: 0.612), Color(red: 0.047, green: 0.165, blue: 0.400)],
@@ -35,12 +51,27 @@ struct PlayingCardView: View {
             }
         }
         .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 5))
         .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(highlighted ? Palette.hintYellow : Color.white.opacity(faceUp ? 0.2 : 0.55), lineWidth: highlighted ? 2.4 : 1)
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(highlighted ? highlightColor : Palette.cardBorder.opacity(faceUp ? 0.55 : 0.35), lineWidth: highlighted ? 3 : 0.8)
         )
+        .shadow(color: highlighted ? highlightColor.opacity(0.45) : .black.opacity(0.22), radius: highlighted ? 6 : 2, y: highlighted ? 0 : 1)
         .opacity(dimmed ? 0.38 : 1)
-        .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
+    }
+
+    private func cornerIndex(color: Color) -> some View {
+        VStack(alignment: .center, spacing: 1) {
+            Text(card.rank.pip)
+                .font(.system(size: cornerFontSize, weight: .bold))
+                .minimumScaleFactor(0.65)
+                .lineLimit(1)
+                .fixedSize()
+            Text(card.suit.symbol)
+                .font(.system(size: suitFontSize))
+                .fixedSize()
+        }
+        .foregroundStyle(color)
     }
 }
 

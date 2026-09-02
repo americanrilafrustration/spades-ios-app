@@ -35,9 +35,8 @@ struct MenuView: View {
 
                 ScrollView {
                     VStack(spacing: 0) {
-                        Text("♠")
-                            .font(.system(size: 72))
-                            .foregroundStyle(Palette.lineGold)
+                        AppLogo(size: 112)
+                            .padding(.bottom, 4)
                         Text("SPADES")
                             .font(.system(size: 44, weight: .bold, design: .serif))
                             .foregroundStyle(Palette.lineGold)

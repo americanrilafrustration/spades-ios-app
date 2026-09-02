@@ -132,7 +132,7 @@ enum SpadesEngine {
     }
 
     static func playCard(_ state: GameState, seat: Seat, card: Card) -> GameState {
-        let legal = legalCards(state, seat)
+        let legal = legalCards(state, seat: seat)
         precondition(legal.contains(card), "Illegal play")
         var next = state
         var player = next.player(seat)

@@ -38,11 +38,15 @@ enum SpadesAi {
         let me = state.player(seat)
         let need = (me.bid ?? 0) - me.tricks
         let partner = seat.partner
+        let avoidBags = state.bagPenaltyEnabled && need <= 0
 
         if state.trick.isEmpty {
             let nonSpades = legal.filter { $0.suit != .spades }
             let pool = nonSpades.isEmpty ? legal : nonSpades
-            return need > 0 ? highest(pool) : lowest(pool)
+            if avoidBags {
+                return lowest(pool)
+            }
+            return highest(pool)
         }
 
         let lead = state.leadSuit!
@@ -50,9 +54,20 @@ enum SpadesAi {
         let winners = legal.filter { wouldWin(state: state, seat: seat, card: $0) }
         let losers = legal.filter { !winners.contains($0) }
 
-        if need <= 0 {
+        if avoidBags {
+            if partnerWinning && state.trick.count == 3 {
+                return lowest(legal)
+            }
             return lowest(losers.isEmpty ? legal : losers)
         }
+
+        if need > 0 {
+            if !winners.isEmpty && !partnerWinning {
+                return lowest(winners)
+            }
+            return lowest(legal)
+        }
+
         if partnerWinning && state.trick.count == 3 {
             return lowest(legal)
         }
